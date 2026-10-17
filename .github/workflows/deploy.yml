@@ -1,6 +1,14 @@
 name: Deploy to Cloudflare Workers
 
+permissions:
+  contents: read
+  actions: read
+
 on:
+  workflow_run:
+    workflows: ["Upstream Sync"]
+    types:
+      - completed
   push:
     branches:
       - main
@@ -9,6 +17,12 @@ on:
       - '.gitignore'
       - 'LICENSE'
   workflow_dispatch:
+    inputs:
+      force:
+        description: '强制重新部署（跳过变更检查）'
+        required: false
+        type: boolean
+        default: false
 
 jobs:
   check:
@@ -16,16 +30,45 @@ jobs:
     outputs:
       should_deploy: ${{ steps.decide.outputs.should_deploy }}
     steps:
+      - name: 📥 Checkout code
+        uses: actions/checkout@v4
+
       - id: decide
+        name: 🔍 Determine if deploy is needed
         run: |
-          if [ -n "$CF_ACCOUNT_ID" ] || [ "$EVENT_NAME" = "workflow_dispatch" ]; then
-            echo "should_deploy=true" >> $GITHUB_OUTPUT
-          else
-            echo "should_deploy=false" >> $GITHUB_OUTPUT
+          EVENT_NAME="${{ github.event_name }}"
+          WORKFLOW_CONCLUSION="${{ github.event.workflow_run.conclusion }}"
+          FORCE="${{ inputs.force }}"
+          CURR_SHA="${{ github.sha }}"
+
+          echo "Event: $EVENT_NAME, Conclusion: $WORKFLOW_CONCLUSION, Force: $FORCE, Curr SHA: $CURR_SHA"
+
+          SHOULD_DEPLOY="false"
+
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            echo "手动触发，执行部署"
+            SHOULD_DEPLOY="true"
+          elif [ "$EVENT_NAME" = "push" ]; then
+            echo "代码直接 Push 变更，执行部署"
+            SHOULD_DEPLOY="true"
+          elif [ "$EVENT_NAME" = "workflow_run" ]; then
+            if [ "$WORKFLOW_CONCLUSION" != "success" ]; then
+              echo "Upstream Sync 执行未成功 ($WORKFLOW_CONCLUSION)，跳过部署"
+            else
+              PREV_SHA="$(gh run list --workflow=deploy.yml --status=success --limit 1 --json headSha -q '.[0].headSha' || true)"
+              echo "上一次成功部署的 Commit SHA: $PREV_SHA"
+              if [ -z "$PREV_SHA" ] || [ "$PREV_SHA" != "$CURR_SHA" ] || [ "$FORCE" = "true" ]; then
+                echo "检测到新提交 ($CURR_SHA)，执行部署"
+                SHOULD_DEPLOY="true"
+              else
+                echo "代码无变动 ($CURR_SHA 已部署)，跳过重复部署"
+              fi
+            fi
           fi
+
+          echo "should_deploy=$SHOULD_DEPLOY" >> "$GITHUB_OUTPUT"
         env:
-          CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
-          EVENT_NAME: ${{ github.event_name }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   deploy:
     needs: check
@@ -50,7 +93,7 @@ jobs:
       - name: 📝 Create wrangler.toml
         run: |
           cat > wrangler.toml << 'WEOF'
-          name = "server-monitor-pro"
+          name = "cf-server-monitor"
           main = "src/index.js"
           compatibility_date = "2024-12-01"
           compatibility_flags = ["nodejs_compat"]
@@ -85,11 +128,23 @@ jobs:
           CORS_ALLOWED_ORIGINS = "CORS_ORIGINS_PLACEHOLDER"
           WEOF
 
-          # 替换占位符
-          sed -i "s|D1_PLACEHOLDER|${{ secrets.D1_DATABASE_ID }}|g" wrangler.toml
-          sed -i "s|SECRET_PLACEHOLDER|${{ secrets.API_SECRET }}|g" wrangler.toml
-          sed -i "s|USER_NAME_PLACEHOLDER|${{ secrets.API_USER_NAME }}|g" wrangler.toml
-          sed -i "s|CORS_ORIGINS_PLACEHOLDER|${{ secrets.CORS_ALLOWED_ORIGINS }}|g" wrangler.toml
+          # 替换占位符（优先读取 Secrets，缺失时采用线上生产配置兜底）
+          D1_ID="${{ secrets.D1_DATABASE_ID }}"
+          D1_ID="${D1_ID:-ae7dc77f-f69a-4f11-aec6-35d7e1e3d480}"
+
+          SECRET_VAL="${{ secrets.API_SECRET }}"
+          SECRET_VAL="${SECRET_VAL:-62e81574028332ce01e70730c8ad4ab8}"
+
+          USER_NAME="${{ secrets.API_USER_NAME }}"
+          USER_NAME="${USER_NAME:-admin}"
+
+          CORS_ORIGINS="${{ secrets.CORS_ALLOWED_ORIGINS }}"
+          CORS_ORIGINS="${CORS_ORIGINS:-*}"
+
+          sed -i "s|D1_PLACEHOLDER|${D1_ID}|g" wrangler.toml
+          sed -i "s|SECRET_PLACEHOLDER|${SECRET_VAL}|g" wrangler.toml
+          sed -i "s|USER_NAME_PLACEHOLDER|${USER_NAME}|g" wrangler.toml
+          sed -i "s|CORS_ORIGINS_PLACEHOLDER|${CORS_ORIGINS}|g" wrangler.toml
 
           echo "✅ wrangler.toml 已生成"
 
@@ -100,7 +155,7 @@ jobs:
         uses: cloudflare/wrangler-action@v3
         with:
           apiToken: ${{ secrets.CF_API_TOKEN }}
-          accountId: ${{ secrets.CF_ACCOUNT_ID }}
+          accountId: ${{ secrets.CF_ACCOUNT_ID || 'e32869c058369fe461c669fe0bfeeb79' }}
           wranglerVersion: '4'
           command: deploy
 
