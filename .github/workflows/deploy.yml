@@ -87,6 +87,11 @@ jobs:
       - name: 📦 Install dependencies
         run: npm install
 
+      - name: ⏱️ Extend frontend auth token expiry to 365 days
+        run: |
+          sed -i 's|604800|31536000|g' src/middleware/auth.js
+          echo "✅ 已注入 365 天长效 Token 与 Cookie 配置"
+
       - name: 🏗️ Build frontend assets
         run: npm run build:frontend
 
