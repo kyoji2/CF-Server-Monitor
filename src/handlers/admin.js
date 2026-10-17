@@ -1,4 +1,4 @@
-import { buildAuthCookie, buildClearAuthCookie, checkAuth, simpleAuthResponse, validateCredentials, generateToken } from '../middleware/auth.js';
+import { buildAuthCookie, buildClearAuthCookie, checkAuth, simpleAuthResponse, validateCredentials, generateToken, getAuthExpirySeconds } from '../middleware/auth.js';
 import { getLatestMetricsForAllServers } from '../database/schema.js';
 import { getAllServers, clearServersListCache } from '../utils/cache.js';
 import { clearAppearanceSettingsCache, isValidThemeOptions, isWssReportConfigured, isWssReportEnabled, normalizeBooleanSetting, normalizeDefaultLanguage, normalizeDisplayMode, normalizeExpireNotificationTime, normalizeExpireReminder, normalizeFrontendWsTimeoutMinutes, normalizeLongHistoryPoints, normalizeNotificationLanguage, normalizeNotificationTemplate, normalizeNotificationTimezone, normalizeNotificationWebhookBody, normalizeNotificationWebhookFormat, normalizeNotificationWebhookHeaders, normalizeNotificationWebhookMethod, normalizePreferredTheme, normalizeResourceAlertRules, normalizeTgNotify, normalizeWssReportHours, saveSiteOptions, saveThemeOptions, SITE_FIELDS, APPEARANCE_FIELDS } from '../utils/settings.js';
@@ -501,13 +501,14 @@ async function handleLoginAction({ request, env, sys, data }) {
   }
 
   try {
-    const token = await generateToken(env, sys);
+    const expirySeconds = getAuthExpirySeconds(env, sys);
+    const token = await generateToken(env, sys, expirySeconds);
     return createSuccessResponse({
       success: true,
       token: token,
       message: 'loginSuccessful'
     }, {
-      'Set-Cookie': buildAuthCookie(request, token)
+      'Set-Cookie': buildAuthCookie(request, token, expirySeconds)
     });
   } catch (e) {
     return createErrorResponse(e);

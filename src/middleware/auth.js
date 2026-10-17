@@ -4,6 +4,15 @@ import { isValidJwtSecret } from '../utils/settings.js';
 
 export const AUTH_COOKIE_NAME = 'cfsm_auth';
 const TOKEN_QUERY_KEYS = ['token', 'auth_token', 'ws_token'];
+export const DEFAULT_AUTH_EXPIRY_SECONDS = 365 * 24 * 60 * 60; // 365 天
+
+export function getAuthExpirySeconds(env, sys) {
+  const customDays = parseInt(sys?.jwt_expiry_days || env?.JWT_EXPIRY_DAYS || env?.AUTH_TOKEN_DAYS, 10);
+  if (!isNaN(customDays) && customDays > 0) {
+    return customDays * 86400;
+  }
+  return DEFAULT_AUTH_EXPIRY_SECONDS;
+}
 
 async function generateKeyFromSecret(secret) {
   const encoder = new TextEncoder();
@@ -107,11 +116,15 @@ async function verifyToken(token, env, sys) {
   }
 }
 
-export async function generateToken(env, sys) {
+export async function generateToken(env, sys, customExpirySeconds = null) {
+  const expiry = typeof customExpirySeconds === 'number' && customExpirySeconds > 0
+    ? customExpirySeconds
+    : getAuthExpirySeconds(env, sys);
+
   const payload = {
     sub: 'admin',
     iat: Math.floor(Date.now() / 1000),
-    exp: Math.floor(Date.now() / 1000) + 604800
+    exp: Math.floor(Date.now() / 1000) + expiry
   };
 
   const secret = getJwtSecret(env, sys);
@@ -145,7 +158,7 @@ export async function checkWebSocketAuth(request, env, sys) {
   return false;
 }
 
-export function buildAuthCookie(request, token, maxAge = 604800) {
+export function buildAuthCookie(request, token, maxAge = DEFAULT_AUTH_EXPIRY_SECONDS) {
   const secure = new URL(request.url).protocol === 'https:' ? '; Secure' : '';
   return `${AUTH_COOKIE_NAME}=${encodeURIComponent(token || '')}; Max-Age=${maxAge}; Path=/; HttpOnly; SameSite=Lax${secure}`;
 }
